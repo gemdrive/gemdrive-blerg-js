@@ -1,0 +1,304 @@
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>blerg</title>
+
+    <style>
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        background-color: #eee;
+      }
+
+      .content {
+        margin: 0 auto;
+        max-width: 900px;
+        font-family: Arial;
+      }
+
+      .remfs-editor {
+        border: 1px solid #222;
+        margin-bottom: 10px;
+      }
+      
+      button {
+        display: inline-block;
+        border: none;
+        padding: 1rem 2rem;
+        margin: 0;
+        text-decoration: none;
+        background: #0069ed;
+        color: #ffffff;
+        font-family: sans-serif;
+        font-size: 1rem;
+        cursor: pointer;
+        text-align: center;
+        transition: background 50ms ease-in-out, 
+                    transform 50ms ease;
+        -webkit-appearance: none;
+        -moz-appearance: none;
+      }
+
+      button:hover,
+      button:focus {
+          background: #0053ba;
+      }
+
+      button:focus {
+          outline: 1px solid #fff;
+          outline-offset: -4px;
+      }
+
+      button:active {
+          transform: scale(0.99);
+      }
+
+    </style>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.54.0/lib/codemirror.css">
+  </head>
+
+  <body>
+
+    <div class='content'></div>
+
+    <script src='https://cdn.jsdelivr.net/gh/remfs/remfs-auth-client@0.3.0/dist/umd.js'></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.54.0/lib/codemirror.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/codemirror@5.54.0/mode/markdown/markdown.js" integrity="sha256-Bh5bbd7S8rnTsstlgiORlKOnsBl7DBvAzD4AUjxMt8Y=" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!--
+    <script src='./lib/remfs-auth-client/dist/umd.js'></script>
+    -->
+    <script>
+
+      (async () => {
+
+
+        let urlParams = new URLSearchParams(window.location.search);
+
+        if (urlParams.has('code') && urlParams.has('state')) {
+          const result = await remfsAuthClient.completeAuthorization();
+          localStorage.setItem('access_token', result.accessToken);
+          
+          urlParams = result.urlParams;
+          urlParams.set('dir', result.state + result.perms[0].path + '/');
+
+          history.pushState(null, '', window.location.pathname + '?' + decodeURIComponent(urlParams.toString()));
+        }
+
+        const accessToken = localStorage.getItem('access_token');
+
+        const dirUrl = urlParams.get('dir');
+
+        if (dirUrl) {
+
+          const urlObj = new URL(dirUrl);
+          const driveUri = urlObj.origin;
+          const path = urlObj.pathname;
+
+          let remfsUrl = dirUrl + 'remfs.json';
+          if (accessToken) {
+            remfsUrl += '?access_token=' + accessToken;
+          }
+
+          const response = await fetch(remfsUrl);
+
+          if (response.status === 200) {
+            const remfs = await response.json();
+            render(driveUri, path, accessToken);
+          }
+          else if (response.status === 403) {
+            await checkAuthorize(driveUri, path);
+          }
+        }
+        else {
+          const driveUri = prompt("Enter a remFS instance:");
+
+          await remfsAuthClient.authorize({
+            driveUri,
+            perms: [
+              {
+                type: 'dir',
+                perm: 'write',
+              }
+            ],
+            state: driveUri,
+          });
+        }
+      })();
+
+      async function render(driveUri, path, accessToken) {
+
+        // https://stackoverflow.com/a/38641281/943814
+        const naturalSorter = new Intl.Collator(undefined, {
+          numeric: true,
+          sensitivity: 'base'
+        });
+
+        const blerg = BlergWidget(driveUri, path, accessToken);
+        const content = document.querySelector('.content');
+        content.appendChild(blerg.dom);
+
+        const postsDir = driveUri + path + 'posts/'
+
+
+        blerg.dom.addEventListener('publish', async (e) => {
+
+          const text = e.detail.text;
+          const html = marked(text);
+          const remfsUrl = postsDir + 'remfs.json?access_token=' + accessToken;
+
+          let readDirResponse = await fetch(remfsUrl);
+
+          if (readDirResponse.status === 404) {
+            // create /posts directory
+            const putUrl = postsDir + '?access_token=' + accessToken;
+            const makeDirResponse = await fetch(putUrl, {
+              method: 'PUT',
+            });
+
+            if (makeDirResponse.status === 403) {
+              await checkAuthorize(driveUri, path);
+            }
+
+            readDirResponse = await fetch(remfsUrl);
+          }
+
+          const remfs = await readDirResponse.json();
+
+          const posts = Object.keys(remfs.children).sort(naturalSorter.compare);
+
+          let filename;
+          if (posts.length > 0) {
+            const next = parseInt(posts[posts.length - 1]) + 1;
+            filename = String(next);
+          }
+          else {
+            filename = '0';
+          }
+
+          posts.push(filename);
+
+          const putUrl = postsDir + filename + '?access_token=' + accessToken;
+
+          const createPostResponse = await fetch(putUrl, {
+            method: 'PUT',
+            body: template(html),
+          });
+
+          if (createPostResponse.status === 403) {
+            await checkAuthorize(driveUri, path);
+          }
+
+
+          // create index.html
+          let postListItems = '';
+          for (const post of posts) {
+            postListItems += `
+              <div>
+                <a href='./posts/${post}'>Post ${post}</a>
+              </div>
+            `;
+          }
+
+          const indexHtml = template(postListItems);
+          const putIndexUrl = driveUri + path + 'index.html?access_token=' + accessToken;
+
+          const createIndexResponse = await fetch(putIndexUrl, {
+            method: 'PUT',
+            body: indexHtml,
+          });
+
+          if (createIndexResponse.status === 403) {
+            await checkAuthorize(driveUri, path);
+          }
+        });
+      }
+
+      function BlergWidget(driveUri, path, accessToken) {
+        const dom = document.createElement('div');
+        dom.classList.add('blerg');
+
+        const heading = document.createElement('h1');
+        dom.appendChild(heading);
+        heading.innerText = "Enter Markdown Post:";
+
+        const editorEl = document.createElement('div');
+        editorEl.classList.add('remfs-editor');
+        dom.appendChild(editorEl);
+
+        const editor = CodeMirror(editorEl, {
+          //lineNumbers: true
+          //value: "# Start writing here...",
+          mode: 'markdown',
+        });
+
+        const publishBtn = document.createElement('button');
+        dom.appendChild(publishBtn);
+        publishBtn.innerText = "Publish";
+        publishBtn.addEventListener('click', (e) => {
+          dom.dispatchEvent(new CustomEvent('publish', {
+            bubbles: true,
+            detail: {
+              text: editor.getValue(),
+            },
+          }));
+        });
+
+
+        return {
+          dom,
+        };
+      }
+
+      async function checkAuthorize(driveUri, path) {
+        const doAuth = confirm("Unauthorized. Do you want to attempt authorization?");
+        if (doAuth) {
+          await authorize(driveUri, path);
+        }
+      }
+
+      async function authorize(driveUri, path) {
+        const trimmedPath = path.endsWith('/') ? path.slice(0, path.length - 1) : path;
+        //const scope = `type=dir;perm=read;path=${trimmedPath}`;
+
+        return remfsAuthClient.authorize({
+          driveUri,
+          perms: [
+            {
+              type: 'dir',
+              perm: 'write',
+              path: trimmedPath,
+            }
+          ],
+          state: driveUri,
+        });
+      }
+
+      function template(inner) {
+        return `
+          <!doctype html>
+          <html>
+            <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Jed's fake blog</title>
+              <link rel="stylesheet" href="https://fonts.xz.style/serve/inter.css">
+              <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@exampledev/new.css@1.1.2/new.min.css">
+            </head>
+            <body>
+              <h1>Jed's Fake Blog</h1>
+              ${inner}
+            </body>
+          </html>
+        `;
+      }
+
+    </script>
+  </body>
+
+</html>
