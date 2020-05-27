@@ -92,6 +92,7 @@
 
         const accessToken = localStorage.getItem('access_token');
 
+
         const dirUrl = urlParams.get('dir');
 
         if (dirUrl) {
@@ -99,6 +100,18 @@
           const urlObj = new URL(dirUrl);
           const driveUri = urlObj.origin;
           const path = urlObj.pathname;
+
+
+          // attempt to create the blog root. Will always fail but 403 instead
+          // of 404 tells us we're not logged in.
+          const permCheckUrl = driveUri + path + '?access_token=' + accessToken;
+          const permCheckResponse = await fetch(permCheckUrl, {
+            method: 'PUT',
+          });
+          if (permCheckResponse.status === 403) {
+            await checkAuthorize(driveUri, path);
+          }
+
 
           let remfsUrl = dirUrl + 'remfs.json';
           if (accessToken) {
